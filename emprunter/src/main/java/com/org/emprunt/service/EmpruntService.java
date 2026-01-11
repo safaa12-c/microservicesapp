@@ -5,7 +5,10 @@ import com.org.emprunt.entities.Emprunter;
 import com.org.emprunt.feign.BookClient;
 import com.org.emprunt.feign.UserClient;
 import com.org.emprunt.repositories.EmpruntRepository;
+import com.org.emprunt.kafka.EmpruntEvent;
+import com.org.emprunt.kafka.KafkaProducerService;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -17,30 +20,47 @@ public class EmpruntService {
     private final EmpruntRepository repo;
     private final UserClient userClient;
     private final BookClient bookClient;
+    private final KafkaProducerService kafkaProducer;
 
-    public EmpruntService(EmpruntRepository repo, UserClient userClient, BookClient bookClient) {
+    public EmpruntService(
+            EmpruntRepository repo,
+            UserClient userClient,
+            BookClient bookClient,
+            KafkaProducerService kafkaProducer) {
+
         this.repo = repo;
         this.userClient = userClient;
         this.bookClient = bookClient;
+        this.kafkaProducer = kafkaProducer;
     }
 
     public Emprunter createEmprunt(Long userId, Long bookId) {
 
-        // 1. Vérifier user existe
         userClient.getUser(userId);
 
-        // 2. Vérifier book existe
         bookClient.getBook(bookId);
 
-        // 3. Créer l’emprunt
-        Emprunter b = new Emprunter();
-        b.setUserId(userId);
-        b.setBookId(bookId);
+        Emprunter emprunt = new Emprunter();
+        emprunt.setUserId(userId);
+        emprunt.setBookId(bookId);
 
-        return repo.save(b);
+        Emprunter savedEmprunt = repo.save(emprunt);
+
+        EmpruntEvent event = new EmpruntEvent(
+                savedEmprunt.getId(),
+                userId,
+                bookId,
+                "EMPRUNT_CREATED",
+                LocalDateTime.now()
+        );
+
+        kafkaProducer.sendEmpruntCreatedEvent(event);
+
+        return savedEmprunt;
     }
 
     public List<EmpruntDetailsDTO> getAllEmprunts() {
+
         return repo.findAll().stream().map(e -> {
 
             var user = userClient.getUser(e.getUserId());
@@ -50,8 +70,9 @@ public class EmpruntService {
                     e.getId(),
                     user.getName(),
                     book.getTitle(),
-                    e.getEmpruntDate());
+                    e.getEmpruntDate()
+            );
+
         }).collect(Collectors.toList());
     }
-
 }
